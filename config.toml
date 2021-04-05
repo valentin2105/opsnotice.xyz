@@ -1,4 +1,4 @@
-baseURL = "https://valentin2105.github.io/opsnotice.xyz/"
+baseURL = "https://valentin2105.github.io/"
 disablePathToLower = true
 languageCode = "en-us"
 title = "OpsNotice.xyz"

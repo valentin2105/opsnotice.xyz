@@ -1,0 +1,77 @@
+<!doctype html><html lang=en-us><head><meta charset=utf-8><meta name=generator content="Hugo 0.82.0"><meta http-equiv=x-ua-compatible content="IE=edge"><meta name=viewport content="width=device-width,initial-scale=1"><meta name=author content="Valentin Ouvrard"><meta property="og:url" content="https://valentin2105.github.io/opsnotice.xyz/post/how-to-monitor-docker-hosts/"><title>How-to monitor Docker ? - OpsNotice.xyz</title><meta property="og:title" content="How-to monitor Docker  ? - OpsNotice.xyz"><meta property="og:type" content="article"><meta name=description content><link rel=stylesheet href=/opsnotice.xyz/css/fonts.css><link rel=stylesheet href=/opsnotice.xyz/css/highlight.css><link rel=stylesheet href=/opsnotice.xyz/css/journal.css><link href=/opsnotice.xyz/index.xml rel=alternate type=application/rss+xml title=OpsNotice.xyz></head><body><div class=container><nav class=site-nav><a href=https://valentin2105.github.io/opsnotice.xyz/>Index</a></nav><article class=post><header class=post-header><h1 class=post-title>How-to monitor Docker ?</h1><time class=post-date datetime="2016-07-29 06:05:17 UTC">29 Jul 2016</time></header><p>The use of containers needs a strong supervision with different metrics than traditional VMs. For monitor Docker hosts, I use a stack of <a href=https://influxdata.com/>InfluxDB</a> a time-series database, <a href=http://grafana.org/>Grafana</a> the data visualiser and finally <a href=https://github.com/influxdata/telegraf>Telegraf</a> to ship our metrics from few hosts.</p><p><img src=/content/images/2016/07/grafana-dashboard.png alt></p><p>I&rsquo;ll show you how-to deploy InfluxDB and Grafana on a docker host and install Telegraf on a Debian-based distribution.
+For sure, we can use Telegraf on Docker but personally, I prefer to install it directly on hosts to make it more permanent.
+If docker go wrong, our metrics are already shipped.</p><p>For launch my supervision stack, I use Docker-compose, you can install it easily using Python-pip :</p><pre><code class=language-language-bash data-lang=language-bash>apt-get -y install python-pip
+pip-install docker-compose
+</code></pre><p>Now, we can create our <strong>docker-compose.yml</strong> file :</p><pre><code class=language-language-yaml data-lang=language-yaml> influxdb:
+   image: tutum/influxdb
+   restart: always
+   expose:
+     - &quot;8090&quot;
+     - &quot;8099&quot;
+   ports:
+     - &quot;127.0.0.1:8083:8083&quot;
+     - &quot;8086:8086&quot;
+   volumes:
+     - /srv/influxdb:/data
+   environment:
+     - ADMIN_USER: &quot;telegraf&quot;
+     - INFLUXDB_INIT_PWD: &quot;Astr0ngPassw0rd&quot;
+     - PRE_CREATE_DB: &quot;telegraf&quot;
+ grafana:
+   image: grafana/grafana:latest
+   restart: always
+   ports:
+     - &quot;3000:3000&quot;
+   volumes:
+     - /srv/grafana:/var/lib/grafana
+   environment:
+     - GF_SECURITY_ADMIN_PASSWORD: &quot;Astr0ngPassw0rd&quot;
+</code></pre><p>This file will create a InfluxDB container with the port 8086 exposed on the Internet (to listen for metrics) with a volume for store data and a Grafana container with a volume for the configuration and the port 3000 exposed for the WebUI.</p><p>For security reason, we change InfluxDB admin user and password because we expose our database on Internet, same thing for the Grafana UI.</p><p>At this point, we are ready to receive metrics and visualise them. For ship some metrics, I use Telegraf, a small Go tools who ship all metrics we need and add some interesting plugins like Network or Docker.</p><p>Let&rsquo;s download the last <strong>.deb</strong> file and install it on each of our Docker Hosts :</p><pre><code class=language-language-bash data-lang=language-bash>wget https://dl.influxdata.com/telegraf/releases/telegraf_1.0.0-beta3_amd64.deb
+dpkg -i telegraf_1.0.0-beta3_amd64.deb
+</code></pre><p>Now, Telegraf is installed, we can now create our configuration file.
+Let&rsquo;s create a new <strong>/etc/telegraf/telegraf.conf</strong> file :</p><pre><code class=language-language-yaml data-lang=language-yaml>[agent]
+  interval = &quot;10s&quot;
+  round_interval = true
+  metric_batch_size = 1000
+  metric_buffer_limit = 10000
+  collection_jitter = &quot;0s&quot;
+  flush_interval = &quot;10s&quot;
+  flush_jitter = &quot;0s&quot;
+  precision = &quot;&quot;
+  debug = false
+  quiet = false
+  hostname = &quot;&quot;
+  omit_hostname = false
+[[outputs.influxdb]]
+  urls = [&quot;http://&lt;InfluxDB-publicIP&gt;:8086&quot;] # required
+  database = &quot;telegraf&quot; # required
+  retention_policy = &quot;&quot;
+  write_consistency = &quot;any&quot;
+  timeout = &quot;5s&quot;
+  username = &quot;telegraf&quot;
+  password = &quot;Astr0ngPassw0rd&quot;
+[[inputs.cpu]]
+  percpu = true
+  totalcpu = true
+  fielddrop = [&quot;time_*&quot;]
+[[inputs.disk]]
+  ignore_fs = [&quot;tmpfs&quot;, &quot;devtmpfs&quot;]
+[[inputs.diskio]]
+[[inputs.kernel]]
+[[inputs.mem]]
+[[inputs.processes]]
+[[inputs.swap]]
+[[inputs.docker]]
+  endpoint = &quot;unix:///var/run/docker.sock&quot;
+[[inputs.net]]
+  interfaces = [&quot;eth0&quot;]
+</code></pre><p>This file is quite simple, we take metrics about cpu, disk, io, kernel, mem, processes, swap, network and Docker (this last plugin is very interesting for us).</p><p>Before launch Telegraf, we had to add telegraf user to the docker group :</p><pre><code class=language-language-bash data-lang=language-bash>usermod -aG docker telegraf
+service telegraf restart
+</code></pre><p>Now, our Telegraf agent is sending hundred metrics to our InfluxDB container. Let&rsquo;s visualise them !
+Go on http://your-ip:3000 and connect to Grafana with these credentials (<strong>admin:Astr0ngPassw0rd</strong>) :</p><p><img src=/content/images/2016/07/grafana-login.png alt></p><p>Before all, we need to connect Grafana with our InfluxDB instance, for this, add a Data Source :</p><p><img src=/content/images/2016/07/add-datasource-grafana.png alt></p><p>Now, we can create our first Dashboard, go to Dashboard > New :</p><p><img src=/content/images/2016/07/create-dash-grafana.png alt></p><p>After, we can add a graph :</p><p><img src=/content/images/2016/07/create-graph-grafana.png alt></p><p>Let&rsquo;s select some metrics (CPU Usage for example) :</p><p><img src=/content/images/2016/07/first-graph-grafana.png alt></p><p>Yeah ! we got our first graph. You can now create tons of graphs for CPU, Memory, Disks usage &mldr;</p><p>If you want to create a Network graph, you&rsquo;ll see a constant rise of your metrics. It&rsquo;s normal. To have a bytes/s graph you have to write a request like this :</p><pre><code class=language-language-bash data-lang=language-bash>SELECT derivative(&quot;bytes_sent&quot;, 1s) FROM &quot;net&quot; WHERE &quot;host&quot; = 'docker'
+</code></pre><p>You can print a single value in your Dashboard, for example the number of containers running on our host. This is possible with the Docker plugin of Telegraf.</p><p>Let&rsquo;s create a <strong>SingleStat</strong> in your Panel :</p><p><img src=/content/images/2016/07/singlestat-grafana.png alt></p><p>At this point, you can create few nice dashboards showing some interesting information about your containers or your hosts.</p><p>For example, here is a graph of this website bandwidth (managed by docker-compose) :</p><p><img src=/content/images/2016/07/opsnotice-bandwith.png alt></p><p>I have finished with this tutorial, I hope it was useful, you can now easily send all your metrics from some Docker hosts to your new Docker supervision Stack.</p><p>I suggest you use Grafana behind a TLS reverse-proxy like Nginx. I&rsquo;m writing an article about that, stay tuned !</p><blockquote class=twitter-tweet data-cards=hidden data-lang=fr><p lang=en dir=ltr>How-to monitor <a href=https://twitter.com/docker>@Docker</a> hosts ? <a href=https://t.co/AWHPOlCybw>https://t.co/AWHPOlCybw</a> by <a href=https://twitter.com/Valentin_NC>@Valentin_NC</a> <a href=https://t.co/8rVOVYwt3Q>pic.twitter.com/8rVOVYwt3Q</a></p>&mdash; Docker (@docker) <a href=https://twitter.com/docker/status/759159080011300864>29 juillet 2016</a></blockquote><script async src=//platform.twitter.com/widgets.js></script></article><footer class=site-footer><span itemscope itemtype=http://schema.org/Person><link itemprop=url href=https://valentin2105.github.io/opsnotice.xyz/><span itemprop=name>Valentin Ouvrard</span>
+,
+<span itemprop=jobTitle>DevOps</span> at
+<span itemprop=memberOf itemscope itemtype=http://schema.org/Organization><a itemprop=url href=https://www.nautile.nc><span itemprop=name>Nautile.nc</span></a></span><br><a itemprop=sameAs href=https://github.com/valentin2105 title=GitHub>GH</a>
+<a itemprop=sameAs href=https://twitter.com/val_ouvrard title=Twitter>TW</a>
+<a itemprop=sameAs href title="GPG  (fingerprint: )">GPG</a></span></footer></div><script src=/opsnotice.xyz/js/highlight.pack.js></script><script>hljs.initHighlightingOnLoad()</script></body></html>

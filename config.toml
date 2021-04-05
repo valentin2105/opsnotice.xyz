@@ -1,0 +1,27 @@
+baseURL = "http://localhost:1313/"
+disablePathToLower = true
+languageCode = "en-us"
+title = "OpsNotice.xyz"
+theme = "hugo-journal"
+[author]
+name = "Valentin Ouvrard"
+
+[markup]
+  [markup.goldmark]
+    [markup.goldmark.renderer]
+      unsafe = true
+
+[params]
+  description = "DevOps Tips & Tricks."
+  githubUsername = "valentin2105"
+  twitterUsername = "val_ouvrard"
+  tagline = "DevOps Tips & Tricks."
+[params.author]
+[params.work]
+  jobTitle = "DevOps"
+  company = "Nautile.nc"
+  companyUrl = "https://www.nautile.nc"
+[params.gpg]
+  key = ""
+  fingerprint = ""
+  link = ""

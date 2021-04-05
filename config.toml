@@ -1,5 +1,5 @@
 baseURL = "https://valentin2105.github.io/opsnotice.xyz/"
-publishDir = "."
+publishDir = "docs"
 disablePathToLower = true
 languageCode = "en-us"
 title = "OpsNotice.xyz"

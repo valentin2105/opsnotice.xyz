@@ -1,0 +1,149 @@
+<!doctype html><html lang=en-us><head><meta charset=utf-8><meta name=generator content="Hugo 0.81.0"><meta http-equiv=x-ua-compatible content="IE=edge"><meta name=viewport content="width=device-width,initial-scale=1"><meta name=author content="Valentin Ouvrard"><meta property="og:url" content="https://valentin2105.github.io/opsnotice.xyz/post/lemp-on-docker/"><title>LEMP on Docker - OpsNotice.xyz</title><meta property="og:title" content="LEMP on Docker - OpsNotice.xyz"><meta property="og:type" content="article"><meta name=description content><link rel=stylesheet href=/opsnotice.xyz/css/fonts.css><link rel=stylesheet href=/opsnotice.xyz/css/highlight.css><link rel=stylesheet href=/opsnotice.xyz/css/journal.css><link href=/opsnotice.xyz/index.xml rel=alternate type=application/rss+xml title=OpsNotice.xyz></head><body><div class=container><nav class=site-nav><a href=https://valentin2105.github.io/opsnotice.xyz/>Index</a></nav><article class=post><header class=post-header><h1 class=post-title>LEMP on Docker</h1><time class=post-date datetime="2016-07-24 03:28:15 UTC">24 Jul 2016</time></header><p><img src=/content/images/2016/07/banner_lemp1-1.png alt></p><p>In this first post, I&rsquo;ll show you how to deploy a LEMP Server (Linux, Nginx, MariaDB, PHP) with Docker on Debian Jessie.</p><h2 id=why->Why ?</h2><p>The advantage of use Docker in this case is that you can deploy it first on your laptop for your development process and finally deploy it easily on a Docker-based VM directly in the Cloud.</p><h2 id=install-docker>Install Docker</h2><p>The first step is the installation of Docker-Engine and Docker-Compose. I use Debian 8 in this example :</p><pre><code class=language-language-bash data-lang=language-bash>apt-get install -y apt-transport-https ca-certificates python-pip
+apt-key adv --keyserver hkp://p80.pool.sks-keyservers.net:80 --recv-keys 58118E89F3A912897C070ADBF76221572C52609D
+echo &quot;deb https://apt.dockerproject.org/repo debian-jessie main&quot; &gt; /etc/apt/sources.list.d/docker.list
+apt-get update ; apt-get -y install docker-engine
+pip install docker-compose
+</code></pre><h2 id=compose-your-stack>Compose your Stack</h2><p>We&rsquo;ll use Docker-Compose to describe our stack of containers. I create a <strong>docker-compose.yml</strong> file like this (in the <strong>/srv</strong> directory) :</p><pre><code class=language-language-yaml data-lang=language-yaml>web_db:
+   image: mariadb:latest
+   restart: always
+   volumes:
+    - ./mysql:/var/lib/mysql
+   environment:
+    MYSQL_ROOT_PASSWORD: @Str0NgP@Ssw0rd
+
+web_front:
+  image: nginx
+  restart: always
+  ports:
+    - 80:80
+    - 443:443
+  log_driver: syslog
+  links:
+    - web_fpm
+  volumes:
+    - ./www:/var/www/html:rw
+    - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    - ./logs/nginx:/var/log/nginx:rw
+    - /etc/letsencrypt:/etc/letsencrypt:rw
+    - ./dhparam.pem:/etc/nginx/certs/dhparam.pem:ro
+
+web_fpm:
+  build: .
+  restart: always
+  links:
+    - web_db:mysql
+  volumes:
+    - ./www:/var/www/html
+</code></pre><p>The first block launch MariaDB with a volume for export data, the second block launch Nginx on ports 80 and 443 with some volumes for the web folder, logs and certs. The last block launch PHP-FPM based on a DockerFile (build directive) linked with the database and sharing the same web folder.</p><h2 id=build-php-image>Build PHP image</h2><p>We have to build our own PHP-FPM image for insert all the module that we want. So I create this <strong>DockerFile</strong> :</p><pre><code class=language-language-docker data-lang=language-docker>FROM php:7.0.8-fpm
+
+RUN apt-get update &amp;&amp; apt-get install -y libpng12-dev libjpeg-dev &amp;&amp; rm -rf /var/lib/apt/lists/* \
+	&amp;&amp; docker-php-ext-configure gd --with-png-dir=/usr --with-jpeg-dir=/usr \
+	&amp;&amp; docker-php-ext-install gd mysqli opcache
+
+RUN { \
+		echo 'opcache.memory_consumption=128'; \
+		echo 'opcache.interned_strings_buffer=8'; \
+		echo 'opcache.max_accelerated_files=4000'; \
+		echo 'opcache.revalidate_freq=60'; \
+		echo 'opcache.fast_shutdown=1'; \
+		echo 'opcache.enable_cli=1'; \
+	} &gt; /usr/local/etc/php/conf.d/opcache-recommended.ini
+
+VOLUME /var/www/html
+
+COPY docker-entrypoint.sh /entrypoint.sh
+
+ENTRYPOINT [&quot;/entrypoint.sh&quot;]
+CMD [&quot;php-fpm&quot;]
+</code></pre><p>You can easily add some PHP modules after those I add by default (<code>gd, mysqli, opcache</code>).
+Last step for PHP, let&rsquo;s create the <strong>docker-entrypoint.sh</strong> file :</p><pre><code class=language-language-bash data-lang=language-bash>#!/bin/bash
+set -e
+exec &quot;$@&quot;
+</code></pre><h2 id=nginx--tls>Nginx & TLS</h2><p>After this, we can setup our Nginx configuration for use TLS with the free Certificate Authority, Let&rsquo;s Encrypt.
+We must generate a dhparam file using openssl :</p><pre><code class=language-langage-bash data-lang=langage-bash>openssl dhparam -out dhparam.pem 4096
+</code></pre><p>Then, we can create our certificates using Docker, of course :</p><pre><code class=language-language-docker data-lang=language-docker>docker run -it --rm -p 443:443 -p 80:80 --name letsencrypt \
+-v &quot;/etc/letsencrypt:/etc/letsencrypt&quot; \
+-v &quot;/var/lib/letsencrypt:/var/lib/letsencrypt&quot; \
+quay.io/letsencrypt/letsencrypt:latest auth
+</code></pre><p>This container will ask you if you want to use a temporary server, choose it and give it your domain name and your e-mail. (Of course, don&rsquo;t forget to correctly redirect your DNS on this server).</p><p>Now, we can create the <strong>nginx.conf</strong> file :</p><pre><code class=language-language-nginx data-lang=language-nginx>worker_processes  1;
+events {
+    worker_connections  1024;
+}
+ 
+http {
+    include       mime.types;
+    default_type  application/octet-stream;
+    sendfile        on;
+    keepalive_timeout  65; 
+    gzip on;
+    gzip_disable &quot;msie6&quot;;  
+    gzip_vary on;
+    gzip_proxied any;
+    gzip_comp_level 6;
+    gzip_buffers 16 8k;
+    gzip_http_version 1.1;
+    gzip_types text/plain text/css application/json application/x-javascript text/xml application/xml application/xml+rss text/javascript;
+    
+    server {
+      listen         80;
+      server_name    example.com;
+      return         301 https://$server_name$request_uri;
+    }
+
+    server {
+      listen 443 ssl http2;
+      ssl_certificate /etc/letsencrypt/live/example.com/fullchain.pem; 
+      ssl_certificate_key /etc/letsencrypt/live/example.com/privkey.pem;
+      ssl_session_timeout 1d;
+      ssl_session_cache shared:SSL:50m;
+      ssl_session_tickets off;
+      ssl_protocols TLSv1.1 TLSv1.2;
+      ssl_ciphers 'ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES256-GCM-SHA384:DHE-RSA-AES128-GCM-SHA256:DHE-DSS-AES128-GCM-SHA256:kEDH+AESGCM:ECDHE-RSA-AES128-SHA256:ECDHE-ECDSA-AES128-SHA256:ECDHE-RSA-AES128-SHA:ECDHE-ECDSA-AES128-SHA:ECDHE-RSA-AES256-SHA384:ECDHE-ECDSA-AES256-SHA384:ECDHE-RSA-AES256-SHA:ECDHE-ECDSA-AES256-SHA:DHE-RSA-AES128-SHA256:DHE-RSA-AES128-SHA:DHE-DSS-AES128-SHA256:DHE-RSA-AES256-SHA256:DHE-DSS-AES256-SHA:DHE-RSA-AES256-SHA:!aNULL:!eNULL:!EXPORT:!DES:!RC4:!3DES:!MD5:!PSK';
+      ssl_prefer_server_ciphers on;
+      ssl_dhparam /etc/nginx/certs/dhparam.pem; 
+      add_header Strict-Transport-Security max-age=15768000;
+      ssl_stapling on;
+      ssl_stapling_verify on;
+      ssl_trusted_certificate /etc/letsencrypt/live/example.com/chain.pem; 
+      resolver 8.8.8.8 8.8.4.4 valid=86400;
+      root /var/www/html;
+      index index.php;
+      location / {
+        try_files $uri $uri/ /index.php?$args;
+      }        
+      location ~ [^/]\.php(/|$) {
+        fastcgi_split_path_info ^(.+?\.php)(/.*)$;
+        if (!-f $document_root$fastcgi_script_name) {
+        	return 404;
+        }
+          root           /var/www/html;
+          fastcgi_pass   web_fpm:9000;
+          fastcgi_index  index.php;
+          fastcgi_param SCRIPT_FILENAME /var/www/html$fastcgi_script_name;
+          include        fastcgi_params;
+      }    
+    }
+}
+</code></pre><p>You have to replace all occurrences of <strong>example.com</strong> with your domain name. Do it quickly with Vim :
+<code>:%s/example.com/new-domain.com/g</code></p><p>We have finished our configurations, we can build our containers and launch them now :</p><pre><code class=language-langage-docker data-lang=langage-docker>docker-compose build; docker-compose up -d
+</code></pre><h2 id=check-it-up>Check it up</h2><p>Let&rsquo;s make a check about PHP version, create a <strong>info.php</strong> into <strong>/srv/www/</strong> :</p><pre><code class=language-language-php data-lang=language-php>&lt;?php
+phpinfo();
+?&gt;
+</code></pre><p><img src=/content/images/2016/07/php-version.png alt></p><p>For check our TLS connexion, I use <a href=https://www.ssllabs.com/ssltest/>SSLLabs</a> :</p><p><img src=/content/images/2016/07/ssllab-result.png alt></p><p>For automatically renew your certificates, you can create a cron with this Docker command (every months for example):</p><pre><code class=language-language-docker data-lang=language-docker>docker run -it --rm --name letsencrypt \
+  -v &quot;/etc/letsencrypt:/etc/letsencrypt&quot; \
+  -v &quot;/srv/www:/srv/www&quot; \
+  -v &quot;/var/lib/letsencrypt:/var/lib/letsencrypt&quot; \
+  quay.io/letsencrypt/letsencrypt \
+  certonly \
+  --webroot \
+  --webroot-path /srv/www \
+  --agree-tos \
+  --renew-by-default \
+  -d example.com \
+  -m contact@example.com
+</code></pre></article><footer class=site-footer><span itemscope itemtype=http://schema.org/Person><link itemprop=url href=https://valentin2105.github.io/opsnotice.xyz/><span itemprop=name>Valentin Ouvrard</span>
+,
+<span itemprop=jobTitle>DevOps</span> at
+<span itemprop=memberOf itemscope itemtype=http://schema.org/Organization><a itemprop=url href=https://www.nautile.nc><span itemprop=name>Nautile.nc</span></a></span><br><a itemprop=sameAs href=https://github.com/valentin2105 title=GitHub>GH</a>
+<a itemprop=sameAs href=https://twitter.com/val_ouvrard title=Twitter>TW</a>
+<a itemprop=sameAs href title="GPG  (fingerprint: )">GPG</a></span></footer></div><script src=/opsnotice.xyz/js/highlight.pack.js></script><script>hljs.initHighlightingOnLoad()</script></body></html>

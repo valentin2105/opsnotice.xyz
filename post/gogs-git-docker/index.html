@@ -1,0 +1,100 @@
+<!doctype html><html lang=en-us><head><meta charset=utf-8><meta name=generator content="Hugo 0.81.0"><meta http-equiv=x-ua-compatible content="IE=edge"><meta name=viewport content="width=device-width,initial-scale=1"><meta name=author content="Valentin Ouvrard"><meta property="og:url" content="https://valentin2105.github.io/opsnotice.xyz/post/gogs-git-docker/"><title>Deploy Gogs, a Git server - OpsNotice.xyz</title><meta property="og:title" content="Deploy Gogs, a Git server - OpsNotice.xyz"><meta property="og:type" content="article"><meta name=description content><link rel=stylesheet href=/opsnotice.xyz/css/fonts.css><link rel=stylesheet href=/opsnotice.xyz/css/highlight.css><link rel=stylesheet href=/opsnotice.xyz/css/journal.css><link href=/opsnotice.xyz/index.xml rel=alternate type=application/rss+xml title=OpsNotice.xyz></head><body><div class=container><nav class=site-nav><a href=https://valentin2105.github.io/opsnotice.xyz/>Index</a></nav><article class=post><header class=post-header><h1 class=post-title>Deploy Gogs, a Git server</h1><time class=post-date datetime="2016-08-07 21:26:00 UTC">07 Aug 2016</time></header><h2 id=contentimages201608gogs-e1461040668891png><img src=/content/images/2016/08/gogs-e1461040668891.png alt></h2><p>I&rsquo;ll show you how-to deploy Gogs, a Git server with a webUI, wrote in Go. We&rsquo;ll use Docker-compose for launch Gogs and Nginx secured with HTTPS using Let&rsquo;s Encrypt.</p><blockquote><p>Gogs (Go Git Service) is a painless self-hosted Git service.</p></blockquote><p>For starting, we need to create some folders to receive our Gogs stack :</p><pre><code class=language-language-bash data-lang=language-bash>mkdir /srv/Gogs
+mkdir -p /srv/Gogs/etc/nginx
+mkdir -p /srv/Gogs/etc/certs
+</code></pre><p>For sure, we need Docker in our server, I use Debian Jessie in my case :</p><pre><code class=language-language-bash data-lang=language-bash>apt-get install -y apt-transport-https ca-certificates python-pip
+apt-key adv --keyserver hkp://p80.pool.sks-keyservers.net:80 --recv-keys 58118E89F3A912897C070ADBF76221572C52609D
+echo &quot;deb https://apt.dockerproject.org/repo debian-jessie main&quot; &gt; /etc/apt/sources.list.d/docker.list
+apt-get update ; apt-get -y install docker-engine
+pip install docker-compose
+</code></pre><p>Next, we&rsquo;ll generate our TLS certificates using a Let&rsquo;s Encrypt container who launches a temporary web-server.
+For this, reply to the answers asked by the container (e-mail and domain) :</p><pre><code class=language-language-docker data-lang=language-docker>docker run -it --rm -p 443:443 -p 80:80 --name letsencrypt \
+            -v &quot;/etc/letsencrypt:/etc/letsencrypt&quot; \
+            -v &quot;/var/lib/letsencrypt:/var/lib/letsencrypt&quot; \
+            quay.io/letsencrypt/letsencrypt:latest auth
+</code></pre><p>Now, we have our certs in <strong>/etc/letsencrypt</strong>, we can create the main Nginx configuration file named <strong>nginx.conf</strong>:</p><pre><code class=language-language-nginx data-lang=language-nginx>worker_processes  1;
+events {
+    worker_connections  1024;
+}
+http {
+    include       mime.types;
+    default_type  application/octet-stream;
+    sendfile        on;
+    keepalive_timeout  65;
+    gzip on;
+    gzip_disable &quot;msie6&quot;;  
+    gzip_vary on;
+    gzip_proxied any;
+    gzip_comp_level 6;
+    gzip_buffers 16 32k;
+    gzip_min_length  1100;
+    gzip_http_version 1.1;
+    gzip_types text/plain text/css application/json application/x-javascript text/xml application/xml application/xml+rss text/javascript;
+   
+    server {
+      listen         80;
+      server_name    git.domain.com; #Remplacer par votre nom de serveur
+      return         301 https://$server_name$request_uri;
+    }
+    server {
+      listen 443 ssl http2;
+      ssl_certificate /etc/letsencrypt/live/git.domain.com/fullchain.pem; #Remplacer par votre chemin
+      ssl_certificate_key /etc/letsencrypt/live/git.domain.com/privkey.pem; #Remplacer par votre chemin
+      ssl_session_timeout 1d;
+      ssl_session_cache shared:SSL:50m;
+      ssl_session_tickets off;
+      ssl_protocols TLSv1.1 TLSv1.2;
+      ssl_ciphers 'ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES256-GCM-SHA384:DHE-RSA-AES128-GCM-SHA256:DHE-DSS-AES128-GCM-SHA256:kEDH+AESGCM:ECDHE-RSA-AES128-SHA256:ECDHE-ECDSA-AES128-SHA256:ECDHE-RSA-AES128-SHA:ECDHE-ECDSA-AES128-SHA:ECDHE-RSA-AES256-SHA384:ECDHE-ECDSA-AES256-SHA384:ECDHE-RSA-AES256-SHA:ECDHE-ECDSA-AES256-SHA:DHE-RSA-AES128-SHA256:DHE-RSA-AES128-SHA:DHE-DSS-AES128-SHA256:DHE-RSA-AES256-SHA256:DHE-DSS-AES256-SHA:DHE-RSA-AES256-SHA:!aNULL:!eNULL:!EXPORT:!DES:!RC4:!3DES:!MD5:!PSK';
+      ssl_prefer_server_ciphers on;
+      ssl_dhparam /etc/nginx/certs/dhparam.pem;
+      add_header Strict-Transport-Security max-age=15768000;
+      ssl_stapling on;
+      ssl_stapling_verify on;
+      ssl_trusted_certificate /etc/letsencrypt/live/git.domain.com/chain.pem; 
+      resolver 8.8.8.8 8.8.4.4 valid=86400;
+    location / {
+        proxy_read_timeout      300;
+        proxy_connect_timeout   300;
+        proxy_redirect          off;
+        proxy_set_header        X-Forwarded-Proto $scheme;
+        proxy_set_header        Host              $http_host;
+        proxy_set_header        X-Real-IP         $remote_addr;
+        proxy_set_header        X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header        X-Frame-Options   SAMEORIGIN;
+        proxy_set_header X-Forwarded-Ssl on;
+        proxy_pass              http://gogs_engine:3000;
+        }
+	}
+} 
+</code></pre><p>Don&rsquo;t forget to replace all occurrences of git.domain.com with your domain name, do it quickly with vim :
+<code>%s/git.domain.com/your.domain.com/g</code></p><p>Now, we can create <strong>docker-compose.yml</strong> to describe our stack :</p><pre><code class=language-language-yaml data-lang=language-yaml>gogs_web:
+  image: nginx
+  restart: always
+  ports:
+    - 443:443
+    - 80:80
+  volumes:
+     - .nginx.conf:/etc/nginx/nginx.conf:ro
+     - ./var/log/nginx:/var/log/nginx
+     - /etc/letsencrypt:/etc/letsencrypt
+     - ./certs/dhparam.pem:/etc/nginx/certs/dhparam.pem
+  links:
+    - gogs_engine
+gogs_engine:
+  image: gogs/gogs:latest
+  restart: always
+  ports:
+    - '2222:22'
+  expose: 
+    - '3000'
+  volumes:
+    - ./var/gogs:/data
+</code></pre><p>For some details, this file launch at first a Nginx container who binds ports 80 and 443 with some volumes for config, certs, logs and it&rsquo;s linked to a second container of Gogs who listens on port 2222 for SSH connexions. Nginx and Gogs are speaking on the port 3000 linked in this file. Gogs also have a volume for stock data of our Git server.</p><p>Before launch our stack, we need to create a DHParam file using OpenSSL :</p><pre><code class=language-language-bash data-lang=language-bash>cd /srv/Gogs/etc/certs
+openssl dhparam -out dhparam.pem 2048
+</code></pre><p>Finally, we can launch our Containers stack :</p><pre><code class=language-language-bash data-lang=language-bash>docker-compose up -d 
+</code></pre><p>Few seconds later, you can reach your server to configure your fresh Gogs server.
+You need to set up a database, you can easily use SQLite but if you want to use MySQL, you can add some lines on your docker-compose.yml file to add a MariaDB instance and link it to your Gogs container.</p><p><img src=/content/images/2016/08/gogs-config.png alt></p><p>Your Git server is ready to receive your dev team !</p><p><img src=/content/images/2016/08/gogs_interface-e1461042820636.png alt></p></article><footer class=site-footer><span itemscope itemtype=http://schema.org/Person><link itemprop=url href=https://valentin2105.github.io/opsnotice.xyz/><span itemprop=name>Valentin Ouvrard</span>
+,
+<span itemprop=jobTitle>DevOps</span> at
+<span itemprop=memberOf itemscope itemtype=http://schema.org/Organization><a itemprop=url href=https://www.nautile.nc><span itemprop=name>Nautile.nc</span></a></span><br><a itemprop=sameAs href=https://github.com/valentin2105 title=GitHub>GH</a>
+<a itemprop=sameAs href=https://twitter.com/val_ouvrard title=Twitter>TW</a>
+<a itemprop=sameAs href title="GPG  (fingerprint: )">GPG</a></span></footer></div><script src=/opsnotice.xyz/js/highlight.pack.js></script><script>hljs.initHighlightingOnLoad()</script></body></html>

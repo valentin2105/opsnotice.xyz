@@ -1,0 +1,27 @@
+<!doctype html><html lang=en-us><head><meta charset=utf-8><meta name=generator content="Hugo 0.81.0"><meta http-equiv=x-ua-compatible content="IE=edge"><meta name=viewport content="width=device-width,initial-scale=1"><meta name=author content="Valentin Ouvrard"><meta property="og:url" content="https://valentin2105.github.io/opsnotice.xyz/post/manage-containers-with-systemd/"><title>Manage containers with Systemd - OpsNotice.xyz</title><meta property="og:title" content="Manage containers with Systemd - OpsNotice.xyz"><meta property="og:type" content="article"><meta name=description content><link rel=stylesheet href=/opsnotice.xyz/css/fonts.css><link rel=stylesheet href=/opsnotice.xyz/css/highlight.css><link rel=stylesheet href=/opsnotice.xyz/css/journal.css><link href=/opsnotice.xyz/index.xml rel=alternate type=application/rss+xml title=OpsNotice.xyz></head><body><div class=container><nav class=site-nav><a href=https://valentin2105.github.io/opsnotice.xyz/>Index</a></nav><article class=post><header class=post-header><h1 class=post-title>Manage containers with Systemd</h1><time class=post-date datetime="2016-07-25 19:09:58 UTC">25 Jul 2016</time></header><p><img src=/content/images/2016/07/banner-systemd-1.png alt></p><p>Use Docker containers on the fly is quite easy but sometimes container management by shell becomes difficult. For easily launch and restart your container, we can use a Systemd unit.</p><h2 id=create-unit-file>Create Unit file</h2><p>In this example, I use a REDIS image that run with docker.
+We need to create the file <strong>/etc/systemd/system/redis.service</strong> :</p><pre><code class=language-langage-bash data-lang=langage-bash>[Unit]
+Description=Redis Service  
+After=docker.service  
+Requires=docker.service
+
+[Service]
+ExecStartPre=-/usr/bin/docker kill redis  
+ExecStartPre=-/usr/bin/docker rm redis  
+ExecStartPre=-/usr/bin/docker pull redis:latest
+ExecStart=/usr/bin/docker run  -d --name redis --restart always redis:latest  
+ExecStop=/usr/bin/docker stop redis
+
+[Install]
+WantedBy=multi-user.target  
+</code></pre><p>This file will wait until the docker service is running then delete old redis container, pull last redis image and finally launch our container.</p><p>Let&rsquo;s enable redis.service and launch it :</p><pre><code class=language-language-bash data-lang=language-bash>systemctl enable redis
+systemctl daemon-reload
+systemctl start redis
+</code></pre><h2 id=verify-our-container>Verify our container</h2><p>After the <code>systemctl start</code> you can check your running container with <code>docker ps</code> :</p><p><img src=/content/images/2016/07/dockerps-redis.png alt></p><h2 id=using-with-docker-compose>Using with docker-compose</h2><p>You can use a Systemd unit file for Docker-compose too like this :</p><pre><code class=language-langague-bash data-lang=langague-bash>ExecStartPre=-/usr/local/bin/docker-compose -f compose-file.yml down
+ExecStart=/usr/local/bin/docker-compose -f compose-file.yml up -d
+ExecStop=/usr/local/bin/docker-compose -f compose-file.yml stop
+</code></pre><p>With this, you can start your stack of containers using Systemd.</p></article><footer class=site-footer><span itemscope itemtype=http://schema.org/Person><link itemprop=url href=https://valentin2105.github.io/opsnotice.xyz/><span itemprop=name>Valentin Ouvrard</span>
+,
+<span itemprop=jobTitle>DevOps</span> at
+<span itemprop=memberOf itemscope itemtype=http://schema.org/Organization><a itemprop=url href=https://www.nautile.nc><span itemprop=name>Nautile.nc</span></a></span><br><a itemprop=sameAs href=https://github.com/valentin2105 title=GitHub>GH</a>
+<a itemprop=sameAs href=https://twitter.com/val_ouvrard title=Twitter>TW</a>
+<a itemprop=sameAs href title="GPG  (fingerprint: )">GPG</a></span></footer></div><script src=/opsnotice.xyz/js/highlight.pack.js></script><script>hljs.initHighlightingOnLoad()</script></body></html>

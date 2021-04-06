@@ -1,0 +1,177 @@
+<!doctype html><html lang=en-us><head><meta charset=utf-8><meta name=generator content="Hugo 0.81.0"><meta http-equiv=x-ua-compatible content="IE=edge"><meta name=viewport content="width=device-width,initial-scale=1"><meta name=author content="Valentin Ouvrard"><meta property="og:url" content="https://valentin2105.github.io/opsnotice.xyz/post/kubernetes-tips-tricks/"><title>Kubernetes tips & tricks - OpsNotice.xyz</title><meta property="og:title" content="Kubernetes tips & tricks - OpsNotice.xyz"><meta property="og:type" content="article"><meta name=description content="How-to make your Kubernetes experience easier, secure and reproducible, especially on premise cluster"><link rel=stylesheet href=/opsnotice.xyz/css/fonts.css><link rel=stylesheet href=/opsnotice.xyz/css/highlight.css><link rel=stylesheet href=/opsnotice.xyz/css/journal.css><link href=/opsnotice.xyz/index.xml rel=alternate type=application/rss+xml title=OpsNotice.xyz></head><body><div class=container><nav class=site-nav><a href=https://valentin2105.github.io/opsnotice.xyz/>Index</a></nav><article class=post><header class=post-header><h1 class=post-title>Kubernetes tips & tricks</h1><time class=post-date datetime="2017-08-16 23:27:54 UTC">16 Aug 2017</time></header><p>In this post, we will see few points to make your Kubernetes experience easier, secure and reproducible, especially on premise cluster.</p><p><img src=/content/images/2017/08/banner.png alt></p><h3 id=i--deploy-using-helm>I- Deploy using helm</h3><p><img src=/content/images/2017/08/Screen-Shot-2017-08-16-at-08.53.38.png alt></p><p>Helm is described as a packets manager for Kubernetes. It allows you to package all your application specifications to easily redeploy on any cluster.</p><p>A basic helm repository is composed by :</p><ul><li><code>Charts.yaml</code> for the name, tags and version of your application</li><li><code>templates/</code> is the folder where you put all your Kubernetes .yaml files (deployments, services, ingresses&mldr;)</li><li><code>values.yaml</code> is a key-value .yaml file where you put all the variables that you want to use in your templates' files.</li></ul><p>For example, if you got this <code>values.yaml</code> :</p><pre><code>global:
+  dbName: test
+  dbPassword: xahc5Ceej2keekoo
+</code></pre><p>You can use theses variables in your <code>templates/mysql-deployment.yaml</code> file :</p><pre><code>apiVersion: v1
+kind: Deployment
+apiVersion: extensions/v1beta1
+metadata:
+  name: mysql
+  namespace: default
+  labels:
+    k8s-app: mysql
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      k8s-app: mysql
+  template:
+    metadata:
+      labels:
+        k8s-app: mysql
+    spec:
+      containers:
+      - image: mysql:latest
+        name: mysql
+        imagePullPolicy: Always
+        env:
+        - name: MYSQL_ROOT_PASSWORD
+          value: {{ .Values.global.dbPassword }}
+        - name: MYSQL_DATABASE
+          value: {{ .Values.global.dbName }}
+</code></pre><p>To install your own helm chart, you can use this command :</p><pre><code>helm install --name=my-chart /chart-folder
+</code></pre><p>If you make a change in your chart (manually or via CI), you can update it with this command :</p><pre><code>helm upgrade my-chart /chart-folder
+</code></pre><h3 id=ii--expose-your-services-with-ingresses>II- Expose your services with Ingresses</h3><p>There are many ways to expose a service in a Kubernetes cluster. If you don&rsquo;t use a cloud hosted cluster, you couldn&rsquo;t use the <code>LoadBalancer</code> type because nobody will provide you a public IP address.</p><p>The best way, for me, in a production-wide cluster, is to use an <code>Ingress Controller</code> like <code>Nginx Ingress</code> and to expose it via service&rsquo;s <code>External IPs</code>.</p><p>To make it possible, you need to route a public (or private) IP range on your k8s' workers and then you can create services like this :</p><pre><code>apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    svc: controller
+  name: controller
+  namespace: default
+spec:
+  clusterIP: 10.32.35.129
+  externalIPs:
+  - 101.5.124.76
+  ports:
+  - port: 80
+    protocol: TCP
+    targetPort: 8888
+  selector:
+    svc: controller
+  type: ClusterIP
+
+</code></pre><p>The external IP is then <code>caught</code> by workers' IPTables who NAT the traffic to the final Pod. If you do this for your Nginx Ingress service, you can now expose all your internal services behind one unique public IPv4 (and IPv6 soon).</p><p>If you think about High-availability, you need to share an IP between all your k8s workers (like <code>keepalived</code>) to route your Public IP&rsquo;s to it. (only on premise cluster).</p><h3 id=iii--use-tls-everywhere>III- Use TLS everywhere</h3><p>To make your internal cluster communications' secures, it&rsquo;s a good point to use TLS in every deployment you create.</p><p>The first point is to expose your pod&rsquo;s service with TLS directly, so if you use a http only server in your container, why not configure TLS with embedded certificates.</p><p>The last point is to expose your TLS service to the Internet with full TLS encryption. So if you use an Ingress controller to expose your service, you need to create first, a TLS secret :</p><pre><code>kubectl -n default create secret tls pod1-tls --key privkey.pem --cert fullchain.pem
+</code></pre><p>Then, you can create your TLS Ingress resource :</p><pre><code>apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: pod1
+  namespace: default
+  annotations:
+    nginx.org/ssl-services: &quot;pod1&quot;
+    kubernetes.io/ingress.class: &quot;nginx&quot;
+spec:
+  tls:
+  - hosts:
+    - pod1.example.com
+    secretName: pod1-tls
+  rules:
+  - host: pod1.example.com
+    http:
+      paths:
+      - path: /
+        backend:
+          serviceName: pod1
+          servicePort: 443
+</code></pre><p>As you see, The service <code>pod1</code> is fully exposed with TLS.</p><h3 id=iv--use-calico-for-network-policies>IV- Use Calico for Network policies</h3><p><img src=/content/images/2017/08/Project-Calico-logo-1000px.png alt></p><p><code>Calico</code> is a tool that enables <code>Secure networking for the cloud native era</code>.
+It is compatible with Kubernetes that allows many awesome options like :</p><ul><li>Fine-grained networking policy</li><li>Routed networking between workers</li><li>BGP with core routers if want to totally disable NAT</li><li>IPv6 on pods (really soon)</li><li>Multiple IP Pools</li></ul><p>And many other folks !</p><p>If you got a Kubernetes cluster with Calico, you can enable isolation in a namespace with this command :</p><pre><code>kubectl annotate ns my-namespace &quot;net.beta.kubernetes.io/network-policy={\&quot;ingress\&quot;:{\&quot;isolation\&quot;:\&quot;DefaultDeny\&quot;}}&quot;
+
+</code></pre><p>For example, you can create a Nginx pod/service on <code>my-namespace</code>. Nobody can talk to him because the namespace is annoted with <code>DefaultDeny</code>.
+If you want to allow the access to your Nginx, you need to define this rule with a <code>NetworkPolicy</code> like this :</p><pre><code>kind: NetworkPolicy
+apiVersion: extensions/v1beta1
+metadata:
+  name: access-nginx
+  namespace: my-namespace
+spec:
+  podSelector:
+    matchLabels:
+      run: nginx
+  ingress:
+    - from:
+      - podSelector:
+          matchLabels: {}
+</code></pre><p>So, with that, you can clearly define in your cluster, which pod can speak to which other pod. If you want to install Calico in your Kubernetes cluster, please take a look to <a href=https://docs.projectcalico.org/v2.4/getting-started/kubernetes/>the documentation</a></p><h3 id=v--glusterfs-for-painless-volumes>V- GlusterFS for painless volumes</h3><p>If you don&rsquo;t use a cloud providers who provide volume plugin for Kubernetes (AWS or Google Cloud), you will need to create your own external volume providers for your cluster.</p><p><code>GlusterFS</code> is a tool that allows to share data (volumes) between two or more Linux servers and to use them in your Kubernetes cluster.</p><p>You can find a lot of posts about how to make a GlusterFS cluster. When you achieve this, here is how to use it in your Kubernetes installation :</p><p>First, you will need to install <code>glusterfs-client</code> on each worker.</p><p>After that, you need to get a <code>Endpoint</code> in the desired namespace :</p><pre><code>{
+  &quot;kind&quot;: &quot;Endpoints&quot;,
+  &quot;apiVersion&quot;: &quot;v1&quot;,
+  &quot;metadata&quot;: {
+    &quot;name&quot;: &quot;glusterfs-cluster&quot;,
+    &quot;namespace&quot;: &quot;default&quot;
+  },
+  &quot;subsets&quot;: [
+    {
+      &quot;addresses&quot;: [
+        {
+          &quot;ip&quot;: &quot;10.240.0.100&quot;
+        }
+      ],
+      &quot;ports&quot;: [
+        {
+          &quot;port&quot;: 1
+        }
+      ]
+    }
+  ]
+}
+</code></pre><p>and a <code>Service</code> in the same namespace :</p><pre><code>{
+  &quot;kind&quot;: &quot;Service&quot;,
+  &quot;apiVersion&quot;: &quot;v1&quot;,
+  &quot;metadata&quot;: {
+    &quot;name&quot;: &quot;glusterfs-cluster&quot;,
+    &quot;namespace&quot;: &quot;default&quot;
+  },
+  &quot;spec&quot;: {
+    &quot;ports&quot;: [
+      {&quot;port&quot;: 1}
+    ]
+  }
+}
+</code></pre><p>Now, with theses resources, you can use the name <code>glusterfs-cluster</code> as a volume provider. Here is an example of a MariaDB pod :</p><pre><code>      containers:
+      - image: mariadb:latest
+        name: mariadb
+        env:
+        - name: MYSQL_ROOT_PASSWORD
+          value: DiThoshePh6oe45fezfz
+        volumeMounts:
+        - name: db-folder
+          mountPath: /var/lib/mysql
+      volumes:
+        - name: db-folder
+          glusterfs:
+            endpoints: glusterfs-cluster
+            path: gluster-volume-name
+            readOnly: false
+</code></pre><h3 id=vi--install-k8s-dashboard>VI- Install k8s dashboard</h3><p>The Kubernetes dashboard is a nice UI to see your cluster&rsquo;s status. It is quite easy to deploy in a new or existing cluster, just follow theses steps :</p><pre><code>kubectl create -f https://git.io/kube-dashboard
+</code></pre><p>When all pods are created, you can access the dashboard using <code>kubectl proxy</code>:</p><pre><code>kubectl proxy
+http://127.0.0.1:8001/ui
+</code></pre><p><img src=/content/images/2017/08/Screen-Shot-2017-08-16-at-08.07.38.png alt></p><h3 id=vii--use-rbac>VII- Use RBAC</h3><p>RBAC (Roles based authentification control) is the perfect way to clearly define who can access to what in your cluster.
+To enable RBAC in a Kubernetes cluster, you need to set this flag in the <code>kube-apiserver</code> configuration (Caution, it can break something in running cluster):</p><pre><code>  --authorization-mode=RBAC
+</code></pre><p>When RBAC is enabled and you want to get admin users, you can put them in the <code>system:masters</code> group (highest admin level).</p><p>To create, for example, an user <code>developer</code> restricted to the <code>dev</code> namespaces, you will need to create a <code>Role</code> and a <code>RoleBinding</code> ressource :</p><pre><code>kind: Role
+apiVersion: rbac.authorization.k8s.io/v1beta1
+metadata:
+  namespace: dev
+  name: role-developer
+rules:
+- apiGroups: [&quot;*&quot;] # &quot;&quot; indicates the core API group
+  resources: [&quot;*&quot;]
+  verbs: [&quot;*&quot;]
+---
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1beta1
+metadata:
+  name: rolebinding-developer
+  namespace: dev
+subjects:
+- kind: User
+  name: developer
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role
+  name: role-developer
+  apiGroup: rbac.authorization.k8s.io
+</code></pre><p>RBAC allow you to clearly define your users authorization. To go more deeper in RBAC in Kubernetes I suggest you read the <a href=https://kubernetes.io/docs/admin/authorization/rbac/>official documentation</a>.</p><h3 id=viii--follow-your-deployment-logs>VIII- Follow your deployment logs</h3><p><code>Kubetail</code> is a small bash script that allow you to follow logs of every pod in a Kubernetes deployment.</p><pre><code>wget https://raw.githubusercontent.com/johanhaleby/kubetail/master/kubetail
+chmod +x kubetail &amp;&amp; mv kubetail /usr/local/bin
+</code></pre><p>Imagine you got a deployment called <code>nginx</code> and scaled to 10 pods, you can follow the 10 pods' logs with this command :</p><pre><code>kubetail nginx -n my-namespace
+</code></pre><h3 id=ix--clean-your-cluster->IX- Clean your cluster !</h3><p>Continues deployment on top of a Kubernetes cluster is great but it creates a lot of old Docker images who, if you do nothing, grow and grow on your Workers file-system.</p><p>A good practice, to avoid Linux problem on Docker host, is to use a dedicated partition for the Docker folder (default <code>/var/lib/docker</code>).</p><p>A second point is to automate worker&rsquo;s cleanup (delete old images) with cron, configuration manager or a better approach, by <a href=https://kubernetes.io/docs/concepts/cluster-administration/kubelet-garbage-collection/>Kubelet directly</a>.</p><p>If you use <code>Deployment</code> on Kubernetes, be sure to use <code>.spec.revisionHistoryLimit</code> to limit <code>ReplicaSets</code> history on your cluster. If you don&rsquo;t do this, you can get quickly more than 100 old <code>ReplicaSets</code>.</p><blockquote><p>That all for now !</p></blockquote></article><footer class=site-footer><span itemscope itemtype=http://schema.org/Person><link itemprop=url href=https://valentin2105.github.io/opsnotice.xyz/><span itemprop=name>Valentin Ouvrard</span>
+,
+<span itemprop=jobTitle>DevOps</span> at
+<span itemprop=memberOf itemscope itemtype=http://schema.org/Organization><a itemprop=url href=https://www.nautile.nc><span itemprop=name>Nautile.nc</span></a></span><br><a itemprop=sameAs href=https://github.com/valentin2105 title=GitHub>GH</a>
+<a itemprop=sameAs href=https://twitter.com/val_ouvrard title=Twitter>TW</a>
+<a itemprop=sameAs href title="GPG  (fingerprint: )">GPG</a></span></footer></div><script src=/opsnotice.xyz/js/highlight.pack.js></script><script>hljs.initHighlightingOnLoad()</script></body></html>

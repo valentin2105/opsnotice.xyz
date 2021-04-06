@@ -1,0 +1,118 @@
+<!doctype html><html lang=en-us><head><meta charset=utf-8><meta name=generator content="Hugo 0.81.0"><meta http-equiv=x-ua-compatible content="IE=edge"><meta name=viewport content="width=device-width,initial-scale=1"><meta name=author content="Valentin Ouvrard"><meta property="og:url" content="https://valentin2105.github.io/opsnotice.xyz/post/iptables-ferm-docker/"><title>IPTables IPv4/6 for Docker - OpsNotice.xyz</title><meta property="og:title" content="IPTables  IPv4/6 for Docker - OpsNotice.xyz"><meta property="og:type" content="article"><meta name=description content><link rel=stylesheet href=/opsnotice.xyz/css/fonts.css><link rel=stylesheet href=/opsnotice.xyz/css/highlight.css><link rel=stylesheet href=/opsnotice.xyz/css/journal.css><link href=/opsnotice.xyz/index.xml rel=alternate type=application/rss+xml title=OpsNotice.xyz></head><body><div class=container><nav class=site-nav><a href=https://valentin2105.github.io/opsnotice.xyz/>Index</a></nav><article class=post><header class=post-header><h1 class=post-title>IPTables IPv4/6 for Docker</h1><time class=post-date datetime="2017-05-08 23:22:48 UTC">08 May 2017</time></header><p>Docker use IPTables to create network isolation between containers, to NAT traffic from their private networks and to expose ports on your Docker host. It&rsquo;s why manage a firewall in front of that is not easy as 1,2,3, even more if you use dual stack (IPv4/6) on your containers.</p><p><img src=/content/images/2017/05/firewall.png alt></p><p>To facilitate the control of Docker host&rsquo;s firewall, I use <a href=http://ferm.foo-projects.org/>Ferm</a>, a great Perl front-end for IPtables. You can for sure use the great and simple UFW but Ferm got a more declarative way to write your firewall rules.</p><p>You can install Ferm quickly with your favorite package manager (apt, yum&mldr;). Then, all your configurations are placed in <strong>/etc/ferm/</strong>. For example, this is a basic <strong>ferm.conf</strong> :</p><pre><code>table filter {
+    chain INPUT {
+        policy DROP;
+        mod state state INVALID DROP;
+        mod state state (ESTABLISHED RELATED) ACCEPT;
+        interface lo ACCEPT;
+        proto icmp icmp-type echo-request ACCEPT;
+
+        # our services to the world
+        proto tcp dport (ssh http https) ACCEPT;
+    }
+
+    chain OUTPUT policy ACCEPT;
+    chain FORWARD policy DROP;
+}
+</code></pre><p>Create a Ferm configuration file for a Docker host is a bit more complicated because we need to manage NAT and isolation for our containers.</p><p>A point of start is to disable IPtables management for your Docker host because you will replace these rules with Ferm (and any reload will erase Docker&rsquo;s rules).</p><p>I will use dual-stack (IPv4/6) for Docker, so we need an IPv6 range defined, for that, if you can&rsquo;t route a Public IPv6 network to your Docker host, you can use a <a href=https://en.wikipedia.org/wiki/Unique_local_address>unique local addresses</a> range from <a href=https://tools.ietf.org/html/rfc4193>RFC4193</a> like <strong>fd00::/64</strong>. It&rsquo;s recommended to <a href=http://unique-local-ipv6.com/>generate your own</a>IPv6 unique local addresses and to not use the same of this example.</p><p>To begin, we must create <strong>/etc/docker/daemon.json</strong> :</p><pre><code>{
+	  &quot;ipv6&quot;: true,
+	  &quot;fixed-cidr-v6&quot;: &quot;fd00::/64&quot;,
+	  &quot;dns&quot;: [&quot;8.8.8.8&quot;, &quot;8.8.4.4&quot;],
+	  &quot;iptables&quot;: false
+} 
+</code></pre><p>Then restart Docker with a <code>service docker restart</code>.</p><p>With this, Docker will stop to use IPtables and enable IPv6 with your defined range. So every container created will take an IP address from this range (if no other defined).</p><p>Now, we can create our <strong>/etc/ferm/ferm.conf</strong> :</p><pre><code># -*- shell-script -*-
+#
+#  Configuration file for ferm(1).
+#
+# Chain policies
+
+# We define our Docker IPv4/6 ranges
+@def $DOCKER_RANGE      = (172.16.0.0/12 fd00::/64);
+
+# We drop INPUT/FORWARD by default and ACCEPT output
+domain (ip ip6) {
+ table filter {
+  chain (INPUT FORWARD) policy DROP;
+  chain OUTPUT policy ACCEPT;
+ }
+}
+
+# Loopback
+domain (ip ip6) table filter {
+ chain INPUT interface lo ACCEPT;
+ chain OUTPUT outerface lo ACCEPT;
+}
+
+# ICMP (kernel does rate-limiting)
+domain (ip) table filter chain (INPUT OUTPUT) protocol icmp ACCEPT;
+domain (ip6) table filter chain (INPUT OUTPUT) protocol icmpv6 ACCEPT;
+
+# Invalid
+domain (ip ip6) table filter chain INPUT mod state state INVALID DROP;
+
+# Established/related connections
+domain (ip ip6) table filter chain (INPUT OUTPUT) mod state state (ESTABLISHED RELATED) ACCEPT;
+
+# We define our opened ports
+domain (ip ip6) table filter chain INPUT {
+		# SSH
+		proto tcp dport ssh ACCEPT;
+		# HTTP
+		proto tcp dport http ACCEPT;
+}
+
+# Docker IPv4 config
+domain ip {
+  table filter {
+    chain FORWARD {
+        saddr @ipfilter($DOCKER_RANGE) ACCEPT;
+        daddr @ipfilter($DOCKER_RANGE) ACCEPT;
+    }
+  }
+  # Create MASQUERADE for IPv4 ranges
+  table nat {
+        chain POSTROUTING {
+	         saddr @ipfilter($DOCKER_RANGE)  MASQUERADE;
+        }
+    }
+}
+
+# Docker IPv6 config
+domain ip6 {
+
+table filter {
+  chain FORWARD {
+      saddr @ipfilter($DOCKER_RANGE) ACCEPT;
+      daddr @ipfilter($DOCKER_RANGE) ACCEPT;
+  }
+}
+
+# Create MASQUERADE for Docker IPv6 unique local addresses ranges
+# Delete this rules if you use Public IPv6 network. 
+table nat {
+      chain POSTROUTING {
+          saddr @ipfilter($DOCKER_RANGE)  MASQUERADE;
+      }
+  }
+}
+
+</code></pre><p>Now we can reload the Ferm firewall with a small <code>/etc/init.d/ferm/reload</code></p><p>If you use a public IPv6 range routed to your server, you need to remove the latest block that enables IPv6 NAT (not required in full public IPv6 networking).</p><p>We will try to launch a Nginx docker containers and reach them on the port 80 of our Docker host. This port is open due to the line that say : <code>proto tcp dport http ACCEPT</code> :</p><pre><code>docker run -d --restart always --name nginx -p 80:80 nginx:alpine
+
+docker exec nginx ifconfig
+
+eth0      Link encap:Ethernet  HWaddr 02:42:AC:11:00:02  
+          inet addr:172.17.0.2  Bcast:0.0.0.0  Mask:255.255.0.0
+          inet6 addr: fd00::242:ac11:2/64 Scope:Global
+
+docker exec -it nginx sh
+/ # ping6 google.com
+PING google.com (2404:6800:4003:c00::64): 56 data bytes
+64 bytes from 2404:6800:4003:c00::64: seq=0 ttl=47 time=46.374 ms
+
+root@docker-host:~# curl [::]80
+&lt;!DOCTYPE html&gt;
+</code></pre><p>You can try to reach the port 80 on IPv4 then on IPv6, it would normally work correctly. You can try to reboot your Docker host to check if the rules are persistent. If you try to launch a container to port 8080, you can&rsquo;t access to him without specifying it on your <strong>ferm.conf</strong> file.</p><p>That all ! Now you got a fully firewalled Docker host.</p><p><strong>BONUS</strong>: If you use IPv4 only, here is a gist of the <strong><a href=https://gist.github.com/valentin2105/63afec4027546b28e998e3b6e1727195>ferm.conf</a></strong>.</p></article><footer class=site-footer><span itemscope itemtype=http://schema.org/Person><link itemprop=url href=https://valentin2105.github.io/opsnotice.xyz/><span itemprop=name>Valentin Ouvrard</span>
+,
+<span itemprop=jobTitle>DevOps</span> at
+<span itemprop=memberOf itemscope itemtype=http://schema.org/Organization><a itemprop=url href=https://www.nautile.nc><span itemprop=name>Nautile.nc</span></a></span><br><a itemprop=sameAs href=https://github.com/valentin2105 title=GitHub>GH</a>
+<a itemprop=sameAs href=https://twitter.com/val_ouvrard title=Twitter>TW</a>
+<a itemprop=sameAs href title="GPG  (fingerprint: )">GPG</a></span></footer></div><script src=/opsnotice.xyz/js/highlight.pack.js></script><script>hljs.initHighlightingOnLoad()</script></body></html>
